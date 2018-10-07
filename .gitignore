@@ -1,5 +1,10 @@
-*.exe
 /packme
+/extract
+*.exe
 *.crt
 *.key
 *.szp
+*.zip
+*.json
+*.txt
+*.xl*

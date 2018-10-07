@@ -8,6 +8,7 @@ import
 	"bytes"
 	"log"
 	"os"
+	"errors"
 	"io/ioutil"
 	"path/filepath"
 	pkcs7 "github.com/fullsailor/pkcs7"
@@ -40,7 +41,7 @@ func main() {
 		"Pkey")
 
 	flag.StringVar(
-		&path, "path", "./packme", 
+		&path, "path", "./", 
 		"Path")
 
 	flag.Parse()
@@ -56,7 +57,14 @@ func main() {
 		fmt.Printf("Packed successfully!\n")
 		os.Exit(0)
 	case "x":
-		extract()
+		err := extract(path, cert, pkey)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(-1)
+		}
+
+		fmt.Printf("Unpacked successfully!\n")
+		os.Exit(0)
 	case "i":
 		info()
 	default:
@@ -115,7 +123,7 @@ func szip (path string, cert string, pkey string) error {
 
 	//Creating .szp file
 	metaSize := new(bytes.Buffer)
-	err = binary.Write(metaSize, binary.BigEndian, uint32(binary.Size(jsonMeta)))
+	err = binary.Write(metaSize, binary.BigEndian, uint32(binary.Size(zipMetaBuf.Bytes())))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -131,8 +139,64 @@ func szip (path string, cert string, pkey string) error {
 	return nil
 }
 
-func extract() {
+func extract(path string, cert string, pkey string) error {
+	//Reading .szp file
+	szp, err := ioutil.ReadFile(path)
+	if err != nil {
+		return err
+	}
 
+	sign, err := pkcs7.Parse(szp)
+	if err != nil {
+		return err
+	}
+
+	err = sign.Verify()
+	if err != nil {
+		return err
+	}
+
+	//Read meta
+	metaSize := int64(binary.BigEndian.Uint32(sign.Content[:4]))
+	bytedMeta := bytes.NewReader(sign.Content[4:metaSize+4])
+
+	readableMeta, err := zip.NewReader(bytedMeta, bytedMeta.Size())
+	if err != nil {
+		return err
+	}
+
+	metaCompressed := readableMeta.File[0] //meta.json
+
+	metaUncompressed, err := metaCompressed.Open()
+	defer metaUncompressed.Close()
+
+	var fileMetas []FileMeta
+	metaUncompressedBody, err := ioutil.ReadAll(metaUncompressed)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(metaUncompressedBody, &fileMetas)
+	if err != nil {
+		return err
+	}
+	//fileMetas - our ready to go .json metas
+
+	//Read archive
+	bytedArchive := bytes.NewReader(sign.Content[4+metaSize:])
+
+	zipReader, err := zip.NewReader(bytedArchive, bytedArchive.Size()) 
+	if err != nil {
+		return err
+	}
+
+	if err != nil {
+		return err
+	}
+	err = ZipFileReader(zipReader)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func info(){
@@ -199,6 +263,42 @@ func ZipFileWriter(path string, pathTrace string, zipWriter *zip.Writer, meta *[
 	return nil
 }
 
+func ZipFileReader(zipReader *zip.Reader) error{
+	for _, file := range zipReader.File {
+		fileInfo := file.FileInfo()
+		if fileInfo.IsDir() {
+			_, err := os.Stat(filepath.Base(file.Name)) 
+			if os.IsNotExist(err) {
+			    os.MkdirAll(file.Name, os.ModePerm)
+			} else {
+				return errors.New("ERROR: Folder " + file.Name + " already exists")
+			}
+		} else {
+			f, err := os.Create(file.Name)
+			if err != nil {
+				return err
+			}
+			fileContent, err := file.Open()
+			if err != nil {
+				return err
+			}
+
+			body, err := ioutil.ReadAll(fileContent)
+			if err != nil {
+				return err
+			}
+
+			_, err = f.Write(body)
+			if err != nil {
+				return err
+			}
+			fileContent.Close()
+		}
+	}
+
+	return nil
+}
+
 func SignArchive(stufToSign []byte, name string, cert string, pkey string) error {
 	//Create data to sign
 	signedData, err := pkcs7.NewSignedData(stufToSign)
@@ -242,6 +342,6 @@ func SignArchive(stufToSign []byte, name string, cert string, pkey string) error
 	if err != nil {
 		return err
 	}
-	
+
 	return nil
 }
