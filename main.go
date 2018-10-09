@@ -6,7 +6,6 @@ import
 	"flag"
 	"archive/zip"
 	"bytes"
-	"log"
 	"os"
 	"errors"
 	"io/ioutil"
@@ -20,16 +19,14 @@ import
 )
 
 func main() {
-	fmt.Printf("Processing...\n")
-
-	var mode, hash, cert, pkey, path string
+	var mode, hash, cert, pkey, source, destination string
 
 	flag.StringVar(
 		&mode, "mode", "i", 
-		"Mode: z, x or i")
+		"Modes: z(zip), x(extract) or i(info)")
 	
 	flag.StringVar(
-		&hash, "hash", "", 
+		&hash, "hash", "UNDEF", 
 		"Hash")
 
 	flag.StringVar(
@@ -41,14 +38,24 @@ func main() {
 		"Pkey")
 
 	flag.StringVar(
-		&path, "path", "./", 
-		"Path")
+		&source, "s", "UNDEF", 
+		"Source")
+
+	flag.StringVar(
+		&destination, "d", "./", 
+		"Destination")
 
 	flag.Parse()
 
 	switch mode {
 	case "z": 
-		err := szip(path, cert, pkey)
+		fmt.Printf("Processing...\n")
+		if source == "UNDEF" {
+			fmt.Println("Source undefined!")
+			os.Exit(-1)
+		}
+
+		err := szip(source, destination, cert, pkey)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(-1)
@@ -56,8 +63,15 @@ func main() {
 
 		fmt.Printf("Packed successfully!\n")
 		os.Exit(0)
+
 	case "x":
-		err := extract(path, cert, pkey)
+		fmt.Printf("Processing...\n")
+		if source == "UNDEF" {
+			fmt.Println("Source undefined!")
+			os.Exit(-1)
+		}
+
+		err := extract(source, destination, cert, pkey, hash)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(-1)
@@ -65,16 +79,21 @@ func main() {
 
 		fmt.Printf("Unpacked successfully!\n")
 		os.Exit(0)
+
 	case "i":
 		info()
+		os.Exit(0)
+
 	default:
-		fmt.Printf("Enter mode\n")
+		fmt.Println("Using -mode flag is mandatory!")
+		fmt.Println("-mode falg accepts only 3 values: z (zip), x(extract) and i(info).")
+		fmt.Println("For more information use -mode=i")
 		os.Exit(-1)
 	}
 
 }
 
-func szip (path string, cert string, pkey string) error {
+func szip (source string, destination string, cert string, pkey string) error {
 	//Create buffer and writer for zip archive
 	zipBuf := new(bytes.Buffer)
 	zipWriter := zip.NewWriter(zipBuf)
@@ -83,7 +102,7 @@ func szip (path string, cert string, pkey string) error {
 	var meta []FileMeta
 
 	//Zip files
-	err := ZipFileWriter(path, filepath.Base(path) + "/", zipWriter, &meta)
+	err := ZipFileWriter(source, filepath.Base(source) + "/", zipWriter, &meta)
 	if err != nil {
 		return err
 	}
@@ -92,7 +111,7 @@ func szip (path string, cert string, pkey string) error {
 	//If defer was used, loss of data would occur
 	err = zipWriter.Close()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	//Obtaining meta
@@ -125,13 +144,13 @@ func szip (path string, cert string, pkey string) error {
 	metaSize := new(bytes.Buffer)
 	err = binary.Write(metaSize, binary.BigEndian, uint32(binary.Size(zipMetaBuf.Bytes())))
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	stufToSign := append(metaSize.Bytes(), zipMetaBuf.Bytes()...)
 	stufToSign = append(stufToSign, zipBuf.Bytes()...)
 
-	err = SignArchive(stufToSign, filepath.Base(path) + ".szp", cert, pkey)
+	err = SignArchive(stufToSign, destination, filepath.Base(source) + ".szp", cert, pkey)
 	if err != nil {
 		return err
 	}
@@ -139,9 +158,9 @@ func szip (path string, cert string, pkey string) error {
 	return nil
 }
 
-func extract(path string, cert string, pkey string) error {
+func extract(source string, destination string, cert string, pkey string, hash string) error {
 	//Reading .szp file
-	szp, err := ioutil.ReadFile(path)
+	szp, err := ioutil.ReadFile(source)
 	if err != nil {
 		return err
 	}
@@ -151,9 +170,38 @@ func extract(path string, cert string, pkey string) error {
 		return err
 	}
 
+	//Verifying certificate
 	err = sign.Verify()
 	if err != nil {
 		return err
+	}
+
+	signer := sign.GetOnlySigner()
+	if signer == nil {
+		return errors.New("ERROR: There are more or less than one signer")
+	}
+
+	if hash != "UNDEF" {
+		if hash != fmt.Sprintf("%x", sha1.Sum(signer.Raw)) {
+			fmt.Println(fmt.Sprintf("%x", sha1.Sum(signer.Raw)))
+			return errors.New("ERROR: Certificate hash is corrupted")
+		}
+	}
+
+	//Parse certificate file
+	certificate, err := tls.LoadX509KeyPair(cert, pkey)
+	if err != nil {
+		return err
+	}
+
+	//Obtain the necessary key
+	rsaCert, err := x509.ParseCertificate(certificate.Certificate[0])
+	if err != nil {
+		return err
+	}
+
+	if bytes.Compare(rsaCert.Raw, signer.Raw) != 0 {
+		return errors.New("ERROR: Certificates don't match")
 	}
 
 	//Read meta
@@ -168,6 +216,9 @@ func extract(path string, cert string, pkey string) error {
 	metaCompressed := readableMeta.File[0] //meta.json
 
 	metaUncompressed, err := metaCompressed.Open()
+	if err != nil {
+		return err
+	}
 	defer metaUncompressed.Close()
 
 	var fileMetas []FileMeta
@@ -189,10 +240,7 @@ func extract(path string, cert string, pkey string) error {
 		return err
 	}
 
-	if err != nil {
-		return err
-	}
-	err = ZipFileReader(zipReader)
+	err = ZipFileReader(zipReader, fileMetas, destination)
 	if err != nil {
 		return err
 	}
@@ -200,7 +248,14 @@ func extract(path string, cert string, pkey string) error {
 }
 
 func info(){
-
+	fmt.Println("Welcome to Secure Archivator!\n")
+	fmt.Println("You can use these flags:")
+	fmt.Println("	-mode - accepts only 3 values: z (zip), x(extract) and i(info). Using this flag is mandatory.\n")
+	fmt.Println("	-s - source - path either to folder to pack (if -mode=z) or to archive to unpack (if -mode=x). In the last case path should end with \".szp\". By default is undefined and you must point it explicitly.\n")
+	fmt.Println("	-d - destination - path euther to folder where to save the .szp archive (if -mode=z) or to folder where to unpack (if -mode=x). By default is \"./\".\n")
+	fmt.Println("	-cert - path to .crt certificate. By default is %userprofile%/my.crt\n")
+	fmt.Println("	-pkey - path to .key private key. By default is %userprofile%/my.key\n")
+	fmt.Println("	-hash - certificate's hash. Is used to verify signature when unpacking archive.\n")
 }
 
 type FileMeta struct {
@@ -223,10 +278,10 @@ func FileToMeta(header *zip.FileHeader, fileBody []byte) (FileMeta){
 	return fileMeta
 }
 
-func ZipFileWriter(path string, pathTrace string, zipWriter *zip.Writer, meta *[]FileMeta) error {
+func ZipFileWriter(source string, pathTrace string, zipWriter *zip.Writer, meta *[]FileMeta) error {
 
-    //Get all files from desired path
-	filesToWrite, err := ioutil.ReadDir(path)
+    //Get all files from desired source
+	filesToWrite, err := ioutil.ReadDir(source)
     if err != nil {
         return err
     }
@@ -237,14 +292,18 @@ func ZipFileWriter(path string, pathTrace string, zipWriter *zip.Writer, meta *[
 	//Search all files inside this destination
 	for _, file := range filesToWrite {
 		if file.IsDir(){
-			ZipFileWriter(path + "/" + file.Name(), pathTrace + file.Name() + "/", zipWriter, meta)
+			ZipFileWriter(source + "/" + file.Name(), pathTrace + file.Name() + "/", zipWriter, meta)
 		} else {
 			f, err := zipWriter.Create(pathTrace + file.Name())
 			if err != nil {
 	            return err
 	        }
 
-	        fileBody, err := ioutil.ReadFile(path + "/" + file.Name())
+	        fileBody, err := ioutil.ReadFile(filepath.Join(source, file.Name()))
+	        if err != nil {
+	            return err
+	        }
+
 	        _, err = f.Write(fileBody)
 	        if err != nil {
 	            return err
@@ -263,43 +322,54 @@ func ZipFileWriter(path string, pathTrace string, zipWriter *zip.Writer, meta *[
 	return nil
 }
 
-func ZipFileReader(zipReader *zip.Reader) error{
+func ZipFileReader(zipReader *zip.Reader, fileMetas []FileMeta, destination string) error{
 	for _, file := range zipReader.File {
+		fileContent, err := file.Open()
+		if err != nil {
+			return err
+		}
+
+		fileBody, err := ioutil.ReadAll(fileContent)
+		if err != nil {
+			return err
+		}
+
+		for _, meta := range fileMetas{
+			if meta.Name == filepath.Base(file.Name) {
+				fileHash := sha1.Sum(fileBody)
+				if meta.Sha1Hash != fileHash {
+					return errors.New("ERROR: Got damaged hash of file " + file.Name)
+				}
+			}
+		}
+
 		fileInfo := file.FileInfo()
 		if fileInfo.IsDir() {
-			_, err := os.Stat(filepath.Base(file.Name)) 
+			_, err := os.Stat(filepath.Join(destination, filepath.Base(file.Name))) 
 			if os.IsNotExist(err) {
-			    os.MkdirAll(file.Name, os.ModePerm)
+			    os.MkdirAll(filepath.Join(destination, file.Name), os.ModePerm)
 			} else {
 				return errors.New("ERROR: Folder " + file.Name + " already exists")
 			}
 		} else {
-			f, err := os.Create(file.Name)
+			f, err := os.Create(filepath.Join(destination, file.Name))
 			if err != nil {
 				return err
 			}
-			fileContent, err := file.Open()
+			
+			_, err = f.Write(fileBody)
 			if err != nil {
 				return err
 			}
-
-			body, err := ioutil.ReadAll(fileContent)
-			if err != nil {
-				return err
-			}
-
-			_, err = f.Write(body)
-			if err != nil {
-				return err
-			}
-			fileContent.Close()
 		}
+
+		fileContent.Close()
 	}
 
 	return nil
 }
 
-func SignArchive(stufToSign []byte, name string, cert string, pkey string) error {
+func SignArchive(stufToSign []byte, destination string, name string, cert string, pkey string) error {
 	//Create data to sign
 	signedData, err := pkcs7.NewSignedData(stufToSign)
 	if err != nil {
@@ -320,7 +390,7 @@ func SignArchive(stufToSign []byte, name string, cert string, pkey string) error
 	}
 
 	//Sign data
-	signedData.AddSigner(rsaCert, rsaPKey, pkcs7.SignerInfoConfig{}) 
+	err = signedData.AddSigner(rsaCert, rsaPKey, pkcs7.SignerInfoConfig{}) 
 	if err != nil {
 	    return err
 	}
@@ -331,8 +401,11 @@ func SignArchive(stufToSign []byte, name string, cert string, pkey string) error
 	    return err
 	}
 
+	//Output the certificate
+	fmt.Printf("Certificate's hash: %x\n", sha1.Sum(rsaCert.Raw))
+
 	//Write them to file
-	szpFile, err := os.Create(name)
+	szpFile, err := os.Create(filepath.Join(destination, name))
 	if err != nil {
 	    return err
 	}
