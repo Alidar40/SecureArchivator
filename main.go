@@ -248,14 +248,14 @@ func extract(source string, destination string, cert string, pkey string, hash s
 }
 
 func info(){
-	fmt.Println("Welcome to Secure Archivator!\n")
+	fmt.Println("Welcome to Secure Archivator!")
 	fmt.Println("You can use these flags:")
-	fmt.Println("	-mode - accepts only 3 values: z (zip), x(extract) and i(info). Using this flag is mandatory.\n")
-	fmt.Println("	-s - source - path either to folder to pack (if -mode=z) or to archive to unpack (if -mode=x). In the last case path should end with \".szp\". By default is undefined and you must point it explicitly.\n")
-	fmt.Println("	-d - destination - path euther to folder where to save the .szp archive (if -mode=z) or to folder where to unpack (if -mode=x). By default is \"./\".\n")
-	fmt.Println("	-cert - path to .crt certificate. By default is %userprofile%/my.crt\n")
-	fmt.Println("	-pkey - path to .key private key. By default is %userprofile%/my.key\n")
-	fmt.Println("	-hash - certificate's hash. Is used to verify signature when unpacking archive.\n")
+	fmt.Println("	-mode - accepts only 3 values: z (zip), x(extract) and i(info). Using this flag is mandatory.")
+	fmt.Println("	-s - source - path either to folder to pack (if -mode=z) or to archive to unpack (if -mode=x). In the last case path should end with \".szp\". By default is undefined and you must point it explicitly.")
+	fmt.Println("	-d - destination - path euther to folder where to save the .szp archive (if -mode=z) or to folder where to unpack (if -mode=x). By default is \"./\".")
+	fmt.Println("	-cert - path to .crt certificate. By default is %userprofile%/my.crt")
+	fmt.Println("	-pkey - path to .key private key. By default is %userprofile%/my.key")
+	fmt.Println("	-hash - certificate's hash. Is used to verify signature when unpacking archive.")
 }
 
 type FileMeta struct {
