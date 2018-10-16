@@ -81,7 +81,7 @@ func main() {
 		os.Exit(0)
 
 	case "i":
-		info()
+		info(source, cert, pkey, hash)
 		os.Exit(0)
 
 	default:
@@ -159,78 +159,17 @@ func szip (source string, destination string, cert string, pkey string) error {
 }
 
 func extract(source string, destination string, cert string, pkey string, hash string) error {
-	//Reading .szp file
-	szp, err := ioutil.ReadFile(source)
+	err, sign := CheckSZP(source, cert, pkey, hash)
 	if err != nil {
 		return err
 	}
 
-	sign, err := pkcs7.Parse(szp)
+	err, fileMetas := GetMeta(sign)
 	if err != nil {
 		return err
 	}
 
-	//Verifying certificate
-	err = sign.Verify()
-	if err != nil {
-		return err
-	}
-
-	signer := sign.GetOnlySigner()
-	if signer == nil {
-		return errors.New("ERROR: There are more or less than one signer")
-	}
-
-	if hash != "UNDEF" {
-		if hash != fmt.Sprintf("%x", sha1.Sum(signer.Raw)) {
-			fmt.Println(fmt.Sprintf("%x", sha1.Sum(signer.Raw)))
-			return errors.New("ERROR: Certificate hash is corrupted")
-		}
-	}
-
-	//Parse certificate file
-	certificate, err := tls.LoadX509KeyPair(cert, pkey)
-	if err != nil {
-		return err
-	}
-
-	//Obtain the necessary key
-	rsaCert, err := x509.ParseCertificate(certificate.Certificate[0])
-	if err != nil {
-		return err
-	}
-
-	if bytes.Compare(rsaCert.Raw, signer.Raw) != 0 {
-		return errors.New("ERROR: Certificates don't match")
-	}
-
-	//Read meta
 	metaSize := int64(binary.BigEndian.Uint32(sign.Content[:4]))
-	bytedMeta := bytes.NewReader(sign.Content[4:metaSize+4])
-
-	readableMeta, err := zip.NewReader(bytedMeta, bytedMeta.Size())
-	if err != nil {
-		return err
-	}
-
-	metaCompressed := readableMeta.File[0] //meta.json
-
-	metaUncompressed, err := metaCompressed.Open()
-	if err != nil {
-		return err
-	}
-	defer metaUncompressed.Close()
-
-	var fileMetas []FileMeta
-	metaUncompressedBody, err := ioutil.ReadAll(metaUncompressed)
-	if err != nil {
-		return err
-	}
-	err = json.Unmarshal(metaUncompressedBody, &fileMetas)
-	if err != nil {
-		return err
-	}
-	//fileMetas - our ready to go .json metas
 
 	//Read archive
 	bytedArchive := bytes.NewReader(sign.Content[4+metaSize:])
@@ -247,15 +186,101 @@ func extract(source string, destination string, cert string, pkey string, hash s
 	return nil
 }
 
-func info(){
-	fmt.Println("Welcome to Secure Archivator!")
-	fmt.Println("You can use these flags:")
-	fmt.Println("	-mode - accepts only 3 values: z (zip), x(extract) and i(info). Using this flag is mandatory.")
-	fmt.Println("	-s - source - path either to folder to pack (if -mode=z) or to archive to unpack (if -mode=x). In the last case path should end with \".szp\". By default is undefined and you must point it explicitly.")
-	fmt.Println("	-d - destination - path euther to folder where to save the .szp archive (if -mode=z) or to folder where to unpack (if -mode=x). By default is \"./\".")
-	fmt.Println("	-cert - path to .crt certificate. By default is %userprofile%/my.crt")
-	fmt.Println("	-pkey - path to .key private key. By default is %userprofile%/my.key")
-	fmt.Println("	-hash - certificate's hash. Is used to verify signature when unpacking archive.")
+func info(source string, cert string, pkey string, hash string) error{
+	err, sign := CheckSZP(source, cert, pkey, hash)
+	if err != nil {
+		return err
+	}
+
+	err, fileMetas := GetMeta(sign)
+	if err != nil {
+		return err
+	}
+
+	for _, file := range fileMetas {
+		fmt.Println(file)
+	}
+
+	return nil
+}
+
+func CheckSZP(source string, cert string, pkey string, hash string) (error, *pkcs7.PKCS7) {
+	//Reading .szp file
+	szp, err := ioutil.ReadFile(source)
+	if err != nil {
+		return err, nil
+	}
+
+	sign, err := pkcs7.Parse(szp)
+	if err != nil {
+		return err, nil
+	}
+
+	//Verifying certificate
+	err = sign.Verify()
+	if err != nil {
+		return err, nil
+	}
+
+	signer := sign.GetOnlySigner()
+	if signer == nil {
+		return errors.New("ERROR: There are more or less than one signer"), nil
+	}
+
+	if hash != "UNDEF" {
+		if hash != fmt.Sprintf("%x", sha1.Sum(signer.Raw)) {
+			fmt.Println(fmt.Sprintf("%x", sha1.Sum(signer.Raw)))
+			return errors.New("ERROR: Certificate hash is corrupted"), nil
+		}
+	}
+
+	//Parse certificate file
+	certificate, err := tls.LoadX509KeyPair(cert, pkey)
+	if err != nil {
+		return err, nil
+	}
+
+	//Obtain the necessary key
+	rsaCert, err := x509.ParseCertificate(certificate.Certificate[0])
+	if err != nil {
+		return err, nil
+	}
+
+	if bytes.Compare(rsaCert.Raw, signer.Raw) != 0 {
+		return errors.New("ERROR: Certificates don't match"), nil
+	}
+	return nil, sign
+}
+
+func GetMeta(p *pkcs7.PKCS7) (error, []FileMeta) {
+	//Read meta
+	metaSize := int64(binary.BigEndian.Uint32(p.Content[:4]))
+	bytedMeta := bytes.NewReader(p.Content[4:metaSize+4])
+
+	readableMeta, err := zip.NewReader(bytedMeta, bytedMeta.Size())
+	if err != nil {
+		return err, nil
+	}
+
+	metaCompressed := readableMeta.File[0] //meta.json
+
+	metaUncompressed, err := metaCompressed.Open()
+	if err != nil {
+		return err, nil
+	}
+	defer metaUncompressed.Close()
+
+	var fileMetas []FileMeta
+	metaUncompressedBody, err := ioutil.ReadAll(metaUncompressed)
+	if err != nil {
+		return err, nil
+	}
+	err = json.Unmarshal(metaUncompressedBody, &fileMetas)
+	if err != nil {
+		return err, nil
+	}
+
+	return nil, fileMetas
 }
 
 type FileMeta struct {
@@ -345,7 +370,7 @@ func ZipFileReader(zipReader *zip.Reader, fileMetas []FileMeta, destination stri
 
 		fileInfo := file.FileInfo()
 		if fileInfo.IsDir() {
-			_, err := os.Stat(filepath.Join(destination, filepath.Base(file.Name))) 
+			_, err := os.Stat(filepath.Join(destination, file.Name)) 
 			if os.IsNotExist(err) {
 			    os.MkdirAll(filepath.Join(destination, file.Name), os.ModePerm)
 			} else {
