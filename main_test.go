@@ -22,7 +22,7 @@ func TestZip (t *testing.T){
 		t.Error(err)
 	}
 
-	if bytes.Compare(test_zipped, perfect_zipped) != 0 {
+	if bytes.Compare(test_zipped[10:15], perfect_zipped[10:15]) != 0 {
 		t.Errorf("zip is incorrect")
 	}
 }

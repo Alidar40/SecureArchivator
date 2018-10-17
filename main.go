@@ -10,7 +10,7 @@ import
 	"errors"
 	"io/ioutil"
 	"path/filepath"
-	pkcs7 "github.com/fullsailor/pkcs7"
+	"github.com/fullsailor/pkcs7"
 	"crypto/x509"
 	"crypto/tls"
     "crypto/sha1"
@@ -198,7 +198,7 @@ func info(source string, cert string, pkey string, hash string) error{
 	}
 
 	for _, file := range fileMetas {
-		fmt.Println(file)
+		fmt.Printf("%+v\n", file)
 	}
 
 	return nil
@@ -381,7 +381,7 @@ func ZipFileReader(zipReader *zip.Reader, fileMetas []FileMeta, destination stri
 			if err != nil {
 				return err
 			}
-			
+			defer f.Close()
 			_, err = f.Write(fileBody)
 			if err != nil {
 				return err
